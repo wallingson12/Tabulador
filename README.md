@@ -1,4 +1,4 @@
-# Ferramenta de Extração de PDF
+# Tabulador
 
 Esta ferramenta permite a extração de dados de documentos PDF, convertendo tabelas e informações relevantes para arquivos Excel. A interface gráfica é construída com Tkinter, oferecendo uma experiência de usuário intuitiva.
 
