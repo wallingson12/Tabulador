@@ -5,7 +5,6 @@ import pandas as pd
 import numpy as np
 import cv2
 from PIL import Image
-from tkinter import filedialog, messagebox
 
 def preprocess_image(image):
     img_np = np.array(image)
@@ -18,17 +17,15 @@ def preprocess_image(image):
     return processed_img
 
 def limpar_valor(valor):
-    if valor is not None:
-        valor = re.sub(r'[^\d.,]', '', valor)  # Remove caracteres não numéricos
-        valor = valor.replace(',', '.')  # Substitui vírgulas por pontos
+    if valor:
+        valor = re.sub(r'[^\d.,;]', '', valor)  # Remove apenas caracteres não permitidos
         return valor
-    return None
+    return ''
 
-def extrair_dctf_pdf(caminho_pdf, usar_ocr=False, nome_saida_detalhamento='dctf_detalhamento.xlsx', nome_saida_resumo='dctf_resumo.xlsx'):
-    caminho_tesseract = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+def extrair_dctf_pdf(caminho_pdf, usar_ocr=True, nome_saida_detalhamento='dctf_detalhamento.xlsx'):
+    caminho_tesseract = r"C:\\Program Files\\Tesseract-OCR\\tesseract.exe"
     pytesseract.pytesseract.tesseract_cmd = caminho_tesseract
 
-    # Começar a partir da página 3
     images = convert_from_path(caminho_pdf, dpi=500, first_page=3)
 
     padrao_detalhamento = {
@@ -43,17 +40,12 @@ def extrair_dctf_pdf(caminho_pdf, usar_ocr=False, nome_saida_detalhamento='dctf_
         "Valor Total do DARF": r'Valor Total do DARF\s*:\s*([\d.,/]+)'
     }
 
-    padrao_resumo = {
-        "PAGAMENTO": r'PAGAMENTO\s*\s*([\d,.\s]+)',
-        "COMPENSAÇÕES": r'COMPENSAÇÕES\s*\s*([\d,.\s]+)',
-        "PARCELAMENTO": r'PARCELAMENTO\s*\s*([\d,.\s]+)',
-        "SUSPENSÃO": r'SUSPENSÃO\s*\s*([\d,.\s]+)',
-        "SOMA DOS CRÉDITOS VINCULADOS": r'SOMA DOS CRÉDITOS VINCULADOS\s*:\s*([\d,.\s]+)'
-    }
-
     dctf_detalhamento = {col: [] for col in padrao_detalhamento}
-    informacoes_resumo = {col: [] for col in padrao_resumo}
-    all_texts = []  # Lista para armazenar o texto extraído de cada página
+
+    all_texts = []
+    soma_multas = 0
+    soma_juros = 0
+    novo_grupo = True
 
     for img in images:
         img = img.convert('RGB')
@@ -62,41 +54,47 @@ def extrair_dctf_pdf(caminho_pdf, usar_ocr=False, nome_saida_detalhamento='dctf_
             processed_img = preprocess_image(img)
             text = pytesseract.image_to_string(processed_img, lang='por', config='--psm 4')
         else:
-            # Se não usar OCR, você pode adicionar uma lógica para extrair texto diretamente da imagem,
-            # mas isso normalmente não é possível sem usar OCR. Aqui, apenas definimos o texto como vazio.
             text = ''
 
         all_texts.append(text)
 
-        # Extração de dados do detalhamento
+        grupo_atual = None
+
         for chave, padrao in padrao_detalhamento.items():
             match = re.search(padrao, text)
             if match:
                 valor = match.group(1).strip()
-                if chave in ["Valor do Principal", "Valor da Multa", "Valor dos Juros", "Valor Pago do Débito", "Valor Total do DARF"]:
-                    valor = limpar_valor(valor)
+
+                if chave == "GRUPO DO TRIBUTO":
+                    if not novo_grupo:
+                        dctf_detalhamento["Valor da Multa"].append(soma_multas)
+                        dctf_detalhamento["Valor dos Juros"].append(soma_juros)
+                        soma_multas, soma_juros = 0, 0
+
+                    grupo_atual = valor
+                    novo_grupo = False
+
+                elif chave == "Valor da Multa":
+                    soma_multas += float(limpar_valor(valor).replace(',', '.'))
+                    continue
+
+                elif chave == "Valor dos Juros":
+                    soma_juros += float(limpar_valor(valor).replace(',', '.'))
+                    continue
+
                 dctf_detalhamento[chave].append(valor)
             else:
-                dctf_detalhamento[chave].append(None)
+                if chave not in ["Valor da Multa", "Valor dos Juros"]:
+                    dctf_detalhamento[chave].append(None)
 
-        # Extração de dados do resumo
-        for chave, padrao in padrao_resumo.items():
-            match = re.search(padrao, text)
-            if match:
-                valor = match.group(1).strip()
-                informacoes_resumo[chave].append(valor)
-            else:
-                informacoes_resumo[chave].append(None)
+    if not novo_grupo:
+        dctf_detalhamento["Valor da Multa"].append(soma_multas)
+        dctf_detalhamento["Valor dos Juros"].append(soma_juros)
 
-    # Criar DataFrames com o número de linhas apropriado
     max_len_detalhamento = max(len(v) for v in dctf_detalhamento.values())
-    max_len_resumo = max(len(v) for v in informacoes_resumo.values())
+    dctf_detalhamento_df = pd.DataFrame(
+        {k: (v + [None] * (max_len_detalhamento - len(v))) for k, v in dctf_detalhamento.items()})
 
-    dctf_detalhamento_df = pd.DataFrame({k: (v + [None] * (max_len_detalhamento - len(v))) for k, v in dctf_detalhamento.items()})
-    dctf_resumo_df = pd.DataFrame({k: (v + [None] * (max_len_resumo - len(v))) for k, v in informacoes_resumo.items()})
-
-    # Salvar os DataFrames em arquivos Excel
     dctf_detalhamento_df.to_excel(nome_saida_detalhamento, index=False)
-    dctf_resumo_df.to_excel(nome_saida_resumo, index=False)
 
-    return dctf_detalhamento_df, dctf_resumo_df, all_texts
+    return dctf_detalhamento_df, all_texts
